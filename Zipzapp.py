@@ -1,30 +1,52 @@
-import sys
 import os
 import zipfile
 import threading
-from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QWidgetAction, QWidget, QVBoxLayout, QProgressBar, QAction, QFileDialog, QListWidget, QListWidgetItem
+import sys
+from PyQt5.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QWidgetAction, QWidget, QVBoxLayout, QAction, QFileDialog, QListWidget, QListWidgetItem
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import QCoreApplication, Qt, QRect, QTimer
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from PyQt5.QtCore import QObject, pyqtSignal
+
+class ProgressSignalHandler(QObject):
+    extraction_started_signal = pyqtSignal()
+    extraction_finished_signal = pyqtSignal()
+
+class ZipExtractorHandler(FileSystemEventHandler):
+    def __init__(self, progress_handler):
+        super().__init__()
+        self.progress_handler = progress_handler
+
+    def on_created(self, event):
+        # This method is called when a file is created in the monitored directory
+        if not event.is_directory and event.src_path.endswith('.zip'):
+            print(f"ZIP file created in monitored folder: {event.src_path}")
+            try:
+                self.extract_zip(event.src_path)
+            except PermissionError as e:
+                print(f"PermissionError: {e}. Cannot extract the ZIP file.")
+
+    def extract_zip(self, zip_path):
+        self.progress_handler.extraction_started_signal.emit()  # Signal that extraction has started
+
+        # Extract the zip file to the same directory
+        folder_path = zip_path.rsplit('.', 1)[0]
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(folder_path)
+
+        os.remove(zip_path)  # Remove the zip file after extraction
+
+        self.progress_handler.extraction_finished_signal.emit()  # Signal that extraction has finished
 
 class SystemTrayApp(QSystemTrayIcon):
-    def __init__(self, icon, parent=None):
+    def __init__(self, icon, busy_icon, parent=None):
         super(SystemTrayApp, self).__init__(icon, parent)
-
         self.setToolTip('System Tray App')
+        self.busy_icon = busy_icon  # Store the busy icon
 
         # Create the context menu
         self.menu = QMenu(parent)
-
-        # Progress Bar Widget Action
-        self.progressAction = QWidgetAction(self.menu)
-        self.progressWidget = QWidget(self.menu)
-        self.progressLayout = QVBoxLayout(self.progressWidget)
-        self.progressBar = QProgressBar(self.progressWidget)
-        self.progressLayout.addWidget(self.progressBar)
-        self.progressAction.setDefaultWidget(self.progressWidget)
-        self.menu.addAction(self.progressAction)
 
         # Watch Folders Action
         self.watchFoldersAction = QWidgetAction(self.menu)
@@ -60,6 +82,21 @@ class SystemTrayApp(QSystemTrayIcon):
         # Handling clicks on the system tray icon
         self.activated.connect(self.onTrayIconActivated)
 
+        # Create and show the progress icon
+        self.progress_icon = QIcon("active.png")  # Use your custom busy icon path
+        self.default_icon = QIcon("icon.png")  # Use your default icon path
+        self.setIcon(self.default_icon)
+
+        # Create a ProgressSignalHandler instance to handle extraction signals
+        self.progress_signal_handler = ProgressSignalHandler()
+
+        # Create a ZipExtractorHandler instance and pass the progress signal handler
+        self.extractor_handler = ZipExtractorHandler(self.progress_signal_handler)
+
+        # Connect the extraction signals to change_icon functions
+        self.progress_signal_handler.extraction_started_signal.connect(self.change_icon_extraction_started)
+        self.progress_signal_handler.extraction_finished_signal.connect(self.change_icon_extraction_finished)
+
     def onTrayIconActivated(self, reason):
         # Get the geometry of the system tray icon
         tray_icon_geometry = self.geometry()
@@ -76,9 +113,13 @@ class SystemTrayApp(QSystemTrayIcon):
         # Show the context menu at the specified position
         self.menu.popup(menu_position.topLeft())
 
+    def change_icon_extraction_started(self):
+        # Change the system tray icon to the busy icon when extraction starts
+        self.setIcon(self.busy_icon)
 
-
-
+    def change_icon_extraction_finished(self):
+        # Change the system tray icon back to the default when extraction finishes
+        self.setIcon(self.default_icon)
 
     def addWatchFolder(self):
         options = QFileDialog.Options()
@@ -147,44 +188,8 @@ class SystemTrayApp(QSystemTrayIcon):
 
         self.updateWatchFolderListWidget()
 
-
-
-class ZipExtractorHandler(FileSystemEventHandler):
-    def on_created(self, event):
-        # This method is called when a file is created in the monitored directory
-        if not event.is_directory and event.src_path.endswith('.zip'):
-            print(f"ZIP file created in monitored folder: {event.src_path}")
-            try:
-                self.extract_zip(event.src_path)
-            except PermissionError as e:
-                print(f"PermissionError: {e}. Cannot extract the ZIP file.")
-
-    def extract_zip(self, zip_path):
-        # Extract the zip file to the same directory without progress updates
-        folder_path = zip_path.rsplit('.', 1)[0]
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(folder_path)
-            os.remove(zip_path)  # Remove the zip file after extraction
-            print(f"ZIP file extracted and removed: {zip_path}")
-        except PermissionError as e:
-            print(f"PermissionError: {e}. Cannot extract the ZIP file.")
-
-
-
-class SystemTrayIcon(QSystemTrayIcon):
-    def __init__(self, icon, parent=None):
-        super(SystemTrayIcon, self).__init__(icon, parent)
-        self.setToolTip('Zip Extractor App')
-
-        menu = QMenu(parent)
-        quit_action = menu.addAction('Quit')
-        quit_action.triggered.connect(sys.exit)
-
-        self.setContextMenu(menu)
-
-def start_monitoring(watch_folders):
-    event_handler = ZipExtractorHandler()
+def start_monitoring(watch_folders, progress_signal_handler):
+    event_handler = ZipExtractorHandler(progress_signal_handler)
 
     for watch_folder in watch_folders:
         observer = Observer()
@@ -205,11 +210,11 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    trayIcon = SystemTrayApp(QIcon("icon.png"))  # Make sure "icon.png" is available in your directory
+    trayIcon = SystemTrayApp(QIcon("icon.png"), QIcon("active.png"))  # Specify both icons
     trayIcon.show()
 
     # Start the watchdog observer in a separate thread
-    threading.Thread(target=start_monitoring, args=(trayIcon.watchFolderList,), daemon=True).start()
+    threading.Thread(target=start_monitoring, args=(trayIcon.watchFolderList, trayIcon.progress_signal_handler), daemon=True).start()
 
     sys.exit(app.exec_())
 
