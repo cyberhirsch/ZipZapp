@@ -3,6 +3,7 @@
 // Used by ZipZap.rc
 //
 #define IDI_ZIPZAP_ICON                 101
+#define IDI_ZIPZAP_BUSY                 102
 
 // Next default values for new objects
 //
