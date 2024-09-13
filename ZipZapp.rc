@@ -1,3 +1,4 @@
 #include "resource.h"
 
 IDI_ZIPZAP_ICON ICON "icon.png"
+IDI_ZIPZAP_BUSY ICON "busy.png"
